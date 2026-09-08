@@ -202,9 +202,13 @@ __attribute__((visibility("default"))) int hook_gsl_memory_alloc_pure_64(uint64_
 __attribute__((visibility("default"))) int hook_gsl_memory_free_pure(void *memDesc) {
     auto gslMemDesc{reinterpret_cast<GslMemDesc *>(memDesc)};
 
-    if (gslMemDesc->priv == GslMemDescImportedPrivMagic) {
-        if (!kgsl_fd)
-            kgsl_fd = open("/dev/kgsl-3d0", O_RDWR);
+    if (gslMemDesc-> priv == GslMemDescImportedPrivMagic) {
+   if (!kgsl_fd) {
+      kgsl_fd = open("/dev/mali0", O_RDWR);
+      if (kgsl_fd < 0) {
+         kgsl_fd = open("/dev/kgsl-3d0", O_RDWR);
+      }
+   }
 
         kgsl_gpumem_get_info info{
             .gpuaddr = gslMemDesc->gpuaddr
