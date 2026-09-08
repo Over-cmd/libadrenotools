@@ -15,6 +15,16 @@
 #include "hook/hook_impl_params.h"
 #include <adrenotools/driver.h>
 #include <unistd.h>
+#include <stdlib.h>
+
+// Forzamos la inyección de las variables de entorno de tu GPU Mali
+// directo en la RAM del proceso para que adrenotools no se apague.
+__attribute__((constructor)) void adrenotools_mali_bridge_init() {
+    setenv("PAN_MESA_DEBUG", "kbase", 1);
+    setenv("PAN_EXPERIMENTAL_KBASE_GL", "1", 1);
+    setenv("MESA_LOADER_DRIVER_OVERRIDE", "panfrost", 1);
+    __android_log_print(ANDROID_LOG_INFO, "adrenotools", "Bypass de Kbase para Mali G52 Inyectado con Éxito");
+}
 
 void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir, const char *customDriverName, const char *fileRedirectDir, void **userMappingHandle) {
     // Bail out if linkernsbypass failed to load, this probably means we're on api < 28
