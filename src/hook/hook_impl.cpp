@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <android_linker_ns.h>
 #include <android/dlext.h>
 #include <android/log.h>
