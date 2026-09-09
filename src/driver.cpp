@@ -17,12 +17,28 @@
 #include <unistd.h>
 #include <stdlib.h>
 
-// Forzamos la inyección de las variables de entorno de tu GPU Mali
-// directo en la RAM del proceso para que adrenotools no se apague.
+// 🟢 MODIFICACIÓN DE SEGURIDAD MALI G52
+extern char **environ; // Acceso directo a la tabla global de entornos de Linux/Android
+
 __attribute__((constructor)) void adrenotools_mali_bridge_init() {
+    // 1. Inyección estándar en el espacio de usuario de C++
     setenv("PAN_MESA_DEBUG", "kbase", 1);
     setenv("PAN_EXPERIMENTAL_KBASE_GL", "1", 1);
+    setenv("PAN_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1); // ¡Faltaba esta línea crucial!
     setenv("MESA_LOADER_DRIVER_OVERRIDE", "panfrost", 1);
+    setenv("GALLIUM_DRIVER", "panfrost", 1);
+
+    // 2. Inyección agresiva directo en la RAM global del proceso
+    // Esto asegura que cualquier biblioteca nativa de Android (como el cargador Vulkan)
+    // lea las variables de Panfrost sí o sí, sin importar el hilo en el que corra.
+    if (environ) {
+        putenv((char*)"PAN_MESA_DEBUG=kbase");
+        putenv((char*)"PAN_EXPERIMENTAL_KBASE_GL=1");
+        putenv((char*)"PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1");
+        putenv((char*)"MESA_LOADER_DRIVER_OVERRIDE=panfrost");
+        putenv((char*)"GALLIUM_DRIVER=panfrost");
+    }
+
     __android_log_print(ANDROID_LOG_INFO, "adrenotools", "Bypass de Kbase para Mali G52 Inyectado con Éxito");
 }
 
