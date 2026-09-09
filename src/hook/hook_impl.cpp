@@ -44,7 +44,7 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char 
     LOGI("hook_android_dlopen_ext: filename: %s", filename);
 
     // Ignore non-vulkan libraries
-    if (!strstr(filename, "vulkan."))
+    if (!strstr(filename, "vulkan.") && !strstr(filename, "panfrost") && !strstr(filename, "pankaku"))
         return android_dlopen_ext(filename, flags, extinfo);
 
     if (extinfo->library_namespace == nullptr || !(extinfo->flags & ANDROID_DLEXT_USE_NAMESPACE)) {
@@ -199,32 +199,45 @@ __attribute__((visibility("default"))) int hook_gsl_memory_alloc_pure_64(uint64_
     }
 }
 
+// 🟢 CORRECCIÓN MALI: Liberación limpia sin comandos KGSL cruzados
 __attribute__((visibility("default"))) int hook_gsl_memory_free_pure(void *memDesc) {
     auto gslMemDesc{reinterpret_cast<GslMemDesc *>(memDesc)};
 
-    if (gslMemDesc-> priv == GslMemDescImportedPrivMagic) {
-   if (!kgsl_fd) {
-      kgsl_fd = open("/dev/mali0", O_RDWR);
-      if (kgsl_fd < 0) {
-         kgsl_fd = open("/dev/kgsl-3d0", O_RDWR);
-      }
-   }
-
-        kgsl_gpumem_get_info info{
-            .gpuaddr = gslMemDesc->gpuaddr
-        };
-
-        if (ioctl(kgsl_fd, IOCTL_KGSL_GPUMEM_GET_INFO, &info) < 0) {
-            LOGI("IOCTL_KGSL_GPUMEM_GET_INFO failed");
-            return 0;
+    if (gslMemDesc->priv == GslMemDescImportedPrivMagic) {
+        if (!kgsl_fd) {
+            kgsl_fd = open("/dev/mali0", O_RDWR);
+            if (kgsl_fd >= 0) {
+                // Si /dev/mali0 abrió bien, liberamos memoria local con munmap
+                if (gslMemDesc->hostptr) {
+                    munmap(gslMemDesc->hostptr, gslMemDesc->size);
+                }
+                gslMemDesc->hostptr = nullptr;
+                gslMemDesc->gpuaddr = 0;
+                return 0;
+            } else {
+                // Si no hay Mali, intentamos abrir Adreno
+                kgsl_fd = open("/dev/kgsl-3d0", O_RDWR);
+            }
         }
 
-        kgsl_gpuobj_free args{
-            .id = info.id,
-        };
+        // 🔴 COMPORTAMIENTO ADRENO: Solo se ejecuta si estamos en Qualcomm
+        if (kgsl_fd >= 0) {
+            kgsl_gpumem_get_info info{
+                .gpuaddr = gslMemDesc->gpuaddr
+            };
 
-        if (ioctl(kgsl_fd, IOCTL_KGSL_GPUOBJ_FREE, &args) < 0)
-            LOGI("IOCTL_KGSL_GPUOBJ_FREE failed");
+            if (ioctl(kgsl_fd, IOCTL_KGSL_GPUMEM_GET_INFO, &info) < 0) {
+                LOGI("IOCTL_KGSL_GPUMEM_GET_INFO failed");
+                return 0;
+            }
+
+            kgsl_gpuobj_free args{
+                .id = info.id,
+            };
+
+            if (ioctl(kgsl_fd, IOCTL_KGSL_GPUOBJ_FREE, &args) < 0)
+                LOGI("IOCTL_KGSL_GPUOBJ_FREE failed");
+        }
 
         return 0;
     } else {
