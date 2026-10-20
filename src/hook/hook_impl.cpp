@@ -117,5 +117,123 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char 
             }
         }
 
-        if (!((gsl_memory_alloc_pure_sym || gsl_memory_alloc_pure_64_sym) && gsl_memory_free_pure_sym))
-            LOGI("hook_android_dlopen_ext
+        if (!((gsl_memory_alloc_pure_sym || gsl_memory_alloc_pure_64_sym) && gsl_memory_free_pure_sym)) {
+            LOGI("hook_android_dlopen_ext: hook failed: failed to apply libgsl_alloc_hook!");
+        }
+    }
+
+    if (hook_params->featureFlags & ADRENOTOOLS_DRIVER_CUSTOM) {
+        LOGI("hook_android_dlopen_ext: loading custom driver: %s%s", hook_params->customDriverDir.c_str(), hook_params->customDriverName.c_str());
+        void *handle{android_dlopen_ext(hook_params->customDriverName.c_str(), flags, &newExtinfo)};
+        if (!handle) {
+            LOGI("hook_android_dlopen_ext: hook failed: failed to load custom driver: %s!", dlerror());
+            return fallback();
+        }
+
+        return handle;
+    } else {
+        LOGI("hook_android_dlopen_ext: loading default driver: %s", filename);
+        return android_dlopen_ext(filename, flags, &newExtinfo);
+    }
+}
+
+__attribute__((visibility("default"))) void *hook_android_load_sphal_library(const char *filename, int flags) {
+    LOGI("hook_android_load_sphal_library: filename: %s", filename);
+
+    for (const char *name : {"sphal", "vendor", "default"}) {
+        if (auto vendorNs{android_get_exported_namespace(name)}) {
+            android_dlextinfo dlextinfo{
+                .flags = ANDROID_DLEXT_USE_NAMESPACE,
+                .library_namespace = vendorNs,
+            };
+
+            return hook_android_dlopen_ext(filename, flags, &dlextinfo);
+        }
+    }
+
+    return nullptr;
+}
+
+__attribute__((visibility("default"))) FILE *hook_fopen(const char *filename, const char *mode) {
+    if (!strncmp("/proc", filename, 5) || !strncmp("/sys", filename, 4)) {
+        LOGI("hook_fopen: passthrough: %s", filename);
+        return fopen(filename, mode);
+    }
+
+    auto replacement{hook_params->fileRedirectDir + filename};
+    LOGI("hook_fopen: %s -> %s", filename, replacement.c_str());
+
+    return fopen(replacement.c_str(), mode);
+}
+
+static constexpr uintptr_t GslMemDescImportedPrivMagic{0xdeadb33f};
+struct GslMemDesc {
+    void *hostptr;
+    uint64_t gpuaddr;
+    uint64_t size;
+    uint64_t flags;
+    uintptr_t priv;
+};
+
+__attribute__((visibility("default"))) int hook_gsl_memory_alloc_pure_64(uint64_t size, uint32_t flags, void *memDesc) {
+    auto gslMemDesc{reinterpret_cast<GslMemDesc *>(memDesc)};
+    if (hook_params->nextGpuMapping && hook_params->nextGpuMapping->size == size && (hook_params->nextGpuMapping->flags & flags) == hook_params->nextGpuMapping->flags) {
+        auto &nextMapping{*hook_params->nextGpuMapping};
+
+        gslMemDesc->hostptr = nextMapping.host_ptr;
+        gslMemDesc->gpuaddr = nextMapping.gpu_addr;
+        gslMemDesc->size = nextMapping.size;
+        gslMemDesc->flags = nextMapping.flags;
+        gslMemDesc->priv = GslMemDescImportedPrivMagic;
+        hook_params->nextGpuMapping->size = 0;
+        hook_params->nextGpuMapping->gpu_addr = ADRENOTOOLS_GPU_MAPPING_SUCCEEDED_MAGIC;
+        return 0;
+    } else {
+        if (gsl_memory_alloc_pure_64_sym)
+            return gsl_memory_alloc_pure_64_sym(size, flags, gslMemDesc);
+        else
+            return gsl_memory_alloc_pure_sym((uint32_t)size, flags, gslMemDesc);
+    }
+}
+
+// 🟢 CORRECCIÓN MALI: Liberación limpia segura para multihilos y sin llamadas ioctl de Adreno
+__attribute__((visibility("default"))) int hook_gsl_memory_free_pure(void *memDesc) {
+    auto gslMemDesc{reinterpret_cast<GslMemDesc *>(memDesc)};
+
+    if (gslMemDesc->priv == GslMemDescImportedPrivMagic) {
+        {
+            std::lock_guard<std::mutex> lock(kgsl_mutex);
+            if (kgsl_fd < 0) {
+                kgsl_fd = open("/dev/mali0", O_RDWR);
+                if (kgsl_fd < 0) {
+                    kgsl_fd = open("/dev/kgsl-3d0", O_RDWR);
+                }
+            }
+        }
+
+        // Realizamos la limpieza local en hardware Mali de forma segura
+        if (gslMemDesc->hostptr) {
+            munmap(gslMemDesc->hostptr, gslMemDesc->size);
+        }
+        gslMemDesc->hostptr = nullptr;
+        gslMemDesc->gpuaddr = 0;
+
+        // Si por alguna razón está corriendo sobre un entorno Adreno real, ejecuta su ioctl de manera aislada
+        if (kgsl_fd >= 0) {
+            kgsl_gpumem_get_info info{
+                .gpuaddr = gslMemDesc->gpuaddr
+            };
+
+            if (ioctl(kgsl_fd, IOCTL_KGSL_GPUMEM_GET_INFO, &info) >= 0) {
+                kgsl_gpuobj_free args{
+                    .id = info.id,
+                };
+                ioctl(kgsl_fd, IOCTL_KGSL_GPUOBJ_FREE, &args);
+            }
+        }
+
+        return 0;
+    } else {
+        return gsl_memory_free_pure_sym(memDesc);
+    }
+}
